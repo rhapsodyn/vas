@@ -1,0 +1,118 @@
+(* verify: https://mdkrajnak.github.io/ebnftest/ *)
+program = stmt_block;
+
+spaces = { space };
+space = " " | "\n" | "\t";
+
+(* statement *)
+stmt_block = { stmt_margin };
+stmt_margin = spaces, stmt, spaces;
+stmt_clause = spaces, "{", stmt_block, "}";
+stmt = bind_stmt
+		| assign_stmt
+		| if_stmt
+		| for_stmt
+		| return_stmt
+		| func_def_stmt
+		| func_call_stmt;
+
+(* let a = 1; *)
+bind_stmt = bind_inner, ";";
+bind_inner = r_let, spaces, (assign_inner | bind_void);
+bind_void = ident, spaces;
+
+(* a = 1; *)
+assign_stmt = assign_inner, ";";
+assign_inner = ident, spaces, "=", spaces, expr;
+
+(* if () {} *)
+if_stmt = r_if, spaces, "(", expr_margin, ")", stmt_clause;
+
+(* for (;;) {} *)
+for_stmt = r_for, spaces, "(", init_or_empty, ";", expr_or_empty, ";", step_or_empty, ")", stmt_clause;
+init_or_empty = (assign_inner | bind_inner) | spaces;
+expr_or_empty = expr_margin | spaces;
+step_or_empty = assign_inner_margin | spaces;
+assign_inner_margin = spaces, assign_inner, spaces;
+
+(* return *)
+return_stmt = r_return, spaces, [expr], spaces, ";";
+
+(* function name() {} *)
+func_def_stmt = r_function, spaces, ident, "(", spaces, func_args, spaces, ")", stmt_clause;
+func_args = { expr, [ { spaces, ",", spaces, expr } ] };
+
+(* name() *)
+func_call_stmt = func_call_inner, ";";
+func_call_inner = ident, "(", func_args, ")";
+
+(* expression *)
+expr = logic_expr
+		| cmp_expr
+		| math_expr
+		| func_call_expr
+		| key_or_value_expr;
+expr_margin = spaces, expr, spaces;
+
+(* true || false *)
+logic_expr = or_not, { logic_rh };
+logic_rh = spaces, logic_op, spaces, or_not;
+logic_op = "&&" | "||";
+or_not = ["!"], expr;
+
+(* 1 > 2 *)
+cmp_expr = expr, spaces, cpm_op, spaces, expr;
+cpm_op = ">" | "<" | ">=" | "<=" | "==" | "!=";
+
+(* 1 + 1 *)
+math_expr = expr, spaces, math_op, spaces, expr;
+math_op = "+" | "-" | "*" | "/";
+
+(* a = add(1) *)
+func_call_expr = func_call_inner;
+
+(* k or v *)
+key_or_value_expr = ident | value;
+
+(* primitive *)
+ident = letter, { letter | digit | '_' };
+
+value = boolean | number | string | ident | null;
+boolean = r_true | r_false;
+number = ["-"], { digit }, [".", { digit }];
+string = '"', { letter }, '"';
+null = "null";
+
+letter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" 
+		| "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" 
+		| "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" 
+		| "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z";
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+
+(* reserved *)
+r_let = "let";
+r_function = "function";
+r_return = "return";
+r_if = "if";
+r_for = "for";
+r_true = "true";
+r_false = "false";
+
+(* example *)
+(*
+let a = -1.1;
+
+function add(a, b) {
+  print("add");
+  return a + b;
+}
+
+for (let i = 0; i < 10; i = i + 1) {
+  if (a > 0 && true) {
+    a = add(a, 1);
+  }
+}
+
+let c = a * 10 + 1;
+print(c);
+*)
