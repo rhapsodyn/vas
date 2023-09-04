@@ -20,12 +20,16 @@ fn math_precedence() {
 #[test]
 fn minus_and_substract() {
     let source = r#"
+        var c = -1;
         var a = -1-2;
+        var b = c+(-a);
     "#;
-    
+
     let i = eval(&source).unwrap();
     let globe = i.inspect();
+    assert_eq!(globe.get_pri_inspect("c"), Some(&Primitives::Num(-1.0)));
     assert_eq!(globe.get_pri_inspect("a"), Some(&Primitives::Num(-3.0)));
+    assert_eq!(globe.get_pri_inspect("b"), Some(&Primitives::Num(2.0)));
 }
 
 #[test]

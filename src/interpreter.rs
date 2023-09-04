@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Neg};
 
 use crate::{common::*, lexer::*, parser::*};
 
@@ -7,10 +7,9 @@ type Function = FnDefStmt;
 pub struct Interpreter {
     global: Option<Scope>,
     program: Program,
-    source: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct Scope {
     pub variables: Variables,
     pub functions: Functions,
@@ -19,6 +18,7 @@ pub struct Scope {
 /// from global to local
 /// stack[0] = global
 /// stack[len - 1] = local
+#[derive(Clone)]
 struct Stack(Vec<Scope>);
 
 impl Stack {
@@ -111,6 +111,26 @@ impl Stack {
             Ok(None)
         }
     }
+
+    fn get_var_mut(&mut self, k: &Identifier, local: bool) -> VasResult<&mut Value> {
+        if local {
+            Ok(self.local_mut()?.get_var_mut(k).ok_or(VasErr::common(
+                ErrKind::Interpreter,
+                &format!("{} undefined", k),
+            ))?)
+        } else {
+            for s in self.0.iter_mut().rev() {
+                if let Some(val) = s.get_var_mut(k) {
+                    return Ok(val);
+                }
+            }
+
+            Err(VasErr::common(
+                ErrKind::Interpreter,
+                &format!("{} undefined", k),
+            ))
+        }
+    }
 }
 
 type Variables = HashMap<Identifier, Value>;
@@ -135,6 +155,10 @@ impl Scope {
 
     fn get_var(&self, key: &Identifier) -> Option<&Value> {
         self.variables.get(key)
+    }
+
+    fn get_var_mut(&mut self, key: &Identifier) -> Option<&mut Value> {
+        self.variables.get_mut(key)
     }
 
     fn get_func(&self, name: &Identifier) -> Option<&Function> {
@@ -171,12 +195,10 @@ impl Scope {
 type EarlyReturn = (bool, Value);
 
 impl Interpreter {
-    /// the `main()` function
-    fn main(program: Program, source: &str) -> Interpreter {
+    fn main(program: Program) -> Interpreter {
         Interpreter {
             global: None,
             program,
-            source: source.to_string(),
         }
     }
 
@@ -261,15 +283,24 @@ impl Interpreter {
     }
 
     fn eval_assign_stmt(&mut self, a: &AssignStmt, sc: &mut Stack, by_bind: bool) -> VasResult<()> {
-        let AssignStmt { ident, expr } = a;
-        let new_val = self.eval_expr(expr, sc)?;
-        if by_bind {
-            sc.set_var(ident.to_string(), new_val, true)?;
-        } else {
-            if sc.get_var(ident, false)?.is_none() {
-                return Err(self.err(&format!("undefined variable: {}", ident)));
-            } else {
-                sc.set_var(ident.to_string(), new_val, false)?;
+        match a {
+            AssignStmt::Var(v) => {
+                let VarAssignStmt { ident, expr } = v;
+                let new_val = self.eval_expr(expr, sc)?;
+                if by_bind {
+                    sc.set_var(ident.to_string(), new_val, true)?;
+                } else {
+                    if sc.get_var(ident, false)?.is_none() {
+                        return Err(self.err(&format!("undefined variable: {}", ident)));
+                    } else {
+                        sc.set_var(ident.to_string(), new_val, false)?;
+                    }
+                }
+            }
+            AssignStmt::Table(t) => {
+                let TableAssignStmt { lhs, expr } = t;
+                let new_val = self.eval_expr(expr, sc)?;
+                self.eval_indexing_lhs(lhs, sc, new_val)?;
             }
         }
 
@@ -451,7 +482,7 @@ impl Interpreter {
             PrimaryExpr::FnCall(fc) => self.eval_fn_call(fc, sc),
             PrimaryExpr::ArrayInit(arr) => self.eval_array_init(arr, sc),
             PrimaryExpr::ObjInit => todo!(),
-            PrimaryExpr::Indexing(idx) => todo!(),
+            PrimaryExpr::Indexing(idx) => self.eval_indexing_rhs(idx, sc),
         }
     }
 
@@ -510,13 +541,20 @@ impl Interpreter {
     fn eval_unary(&mut self, u: &UnaryExpr, sc: &mut Stack) -> VasResult<Value> {
         let UnaryExpr { op, rhs } = u;
         let r_value = self.eval_expr(&rhs, sc)?;
-        let result: bool = match (&op, &r_value) {
-            (UnaryOp::Not, Value::Primitives(Primitives::Boolean(b))) => !b,
-            (UnaryOp::Not, Value::Primitives(Primitives::Null)) => true,
+        let val = match (&op, &r_value) {
+            (UnaryOp::Not, Value::Primitives(Primitives::Boolean(b))) => {
+                Value::Primitives(Primitives::Boolean(!b))
+            }
+            (UnaryOp::Not, Value::Primitives(Primitives::Null)) => {
+                Value::Primitives(Primitives::Boolean(true))
+            }
+            (UnaryOp::Neg, Value::Primitives(Primitives::Num(n))) => {
+                Value::Primitives(Primitives::Num(n.neg()))
+            }
             _ => return Err(self.err(&format!("unary expr: {:?} {:?} not supported", op, r_value))),
         };
 
-        Ok(Value::Primitives(Primitives::Boolean(result)))
+        Ok(val)
     }
 
     fn eval_fn_call(&mut self, call: &FnCallExpr, stack: &mut Stack) -> VasResult<Value> {
@@ -563,17 +601,100 @@ impl Interpreter {
 
         Ok(Value::Table(Table(val)))
     }
+
+    fn eval_indexing_rhs(&mut self, idx: &IndexingExpr, sc: &mut Stack) -> VasResult<Value> {
+        let base = self.eval_primary(&idx.lhs, sc)?;
+        let key = self.eval_expr(&idx.key, sc)?;
+        // dbg!(&idx);
+        // dbg!(&sc.0);
+
+        match base {
+            Value::Primitives(_) => Err(self.err("can not indexing to primitive")),
+            Value::Table(mut t) => {
+                let k = match key {
+                    Value::Primitives(p) => p.to_string(),
+                    Value::Table(_) => return Err(self.err("can not indexing by table")),
+                };
+
+                match t.0.get_mut(&k) {
+                    Some(v) => Ok(v.clone()),
+                    None => Ok(Value::Primitives(Primitives::Null)),
+                }
+            }
+        }
+    }
+
+    fn eval_indexing_lhs(
+        &mut self,
+        idx: &IndexingExpr,
+        sc: &mut Stack,
+        val: Value,
+    ) -> VasResult<()> {
+        dbg!(&idx);
+        let key = self.eval_expr(&idx.key, sc)?;
+        let base = self.eval_primary_mut(&idx.lhs, sc)?;
+
+        match base {
+            Value::Primitives(_) => return Err(self.err("can not indexing to primitive")),
+            Value::Table(t) => match key {
+                Value::Table(_) => return Err(self.err("can not indexing by table")),
+                Value::Primitives(p) => {
+                    let k = p.to_string();
+                    t.0.insert(k, val);
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    /// can only appear at lhs
+    fn eval_primary_mut<'a, 'b>(
+        &'a mut self,
+        pri: &PrimaryExpr,
+        sc: &'b mut Stack,
+    ) -> VasResult<&'b mut Value> {
+        dbg!(pri);
+        match pri {
+            // a[0] = 1
+            PrimaryExpr::KV(kv) => match kv {
+                KVExpr::Key(k) => sc.get_var_mut(k, false),
+                KVExpr::Value(v) => Err(self.err(&format!("{:?} can not stand at lhs", v))),
+            },
+            // TODO:
+            // a[0][0] = 1
+            PrimaryExpr::Indexing(i) => {
+                let mut cloned_sc = sc.clone();
+                let v = self.eval_primary_mut(&i.lhs, sc)?;
+                match v {
+                    Value::Primitives(_) => Ok(v),
+                    Value::Table(t) => {
+                        let value_of_key = self.eval_expr(&i.key, &mut cloned_sc)?;
+                        match value_of_key {
+                            Value::Primitives(p) => {
+                                let k = p.to_string();
+                                Ok(t.get_mut(&k)
+                                    .ok_or(self.err(&format!("no such key: {}", k)))?)
+                            }
+                            Value::Table(_) => Err(self.err("can not indexing by table")),
+                        }
+                    }
+                }
+            }
+            other => Err(self.err(&format!("{:?} can not stand at lhs", other))),
+        }
+    }
 }
 
 ///
-/// copy source 3 times, but seems ok
+/// TODO: copy source 3 times, may replace by some Span<usize, usize>
 ///
 pub fn eval(source: &str) -> VasResult<Interpreter> {
     let tks = tokenize(source)?;
     // dbg!(&tks);
     let ast = parse(&tks, source)?;
-    // dbg!(&ast);
-    let mut main = Interpreter::main(ast, source);
+    dbg!(&ast);
+    let mut main = Interpreter::main(ast);
     main.eval()?;
     Ok(main)
 }

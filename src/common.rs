@@ -11,6 +11,16 @@ pub enum Value {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Table(pub HashMap<Identifier, Value>);
 
+impl Table {
+    pub fn get(&self, k: &Identifier) -> Option<&Value> {
+        self.0.get(k)
+    }
+
+    pub fn get_mut(&mut self, k: &Identifier) -> Option<&mut Value> {
+        self.0.get_mut(k)
+    }
+}
+
 // TODO how to map to opcode?
 #[derive(Debug, Clone, PartialEq)]
 pub enum Primitives {
@@ -66,6 +76,17 @@ impl Falsy for Primitives {
 
     fn is_false(&self) -> bool {
         !self.is_true()
+    }
+}
+
+impl ToString for Primitives {
+    fn to_string(&self) -> Identifier {
+        match self {
+            Primitives::Num(n) => n.to_string(),
+            Primitives::String(s) => s.clone(),
+            Primitives::Boolean(b) => b.to_string(),
+            Primitives::Null => String::from("null"),
+        }
     }
 }
 

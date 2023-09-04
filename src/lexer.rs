@@ -195,24 +195,25 @@ pub fn tokenize(source: &str) -> VasResult<Tokens> {
             '(' => Some(Token::Punctuaion(Punctuation::ParenLeft)),
             ')' => Some(Token::Punctuaion(Punctuation::ParenRight)),
             '+' => Some(Token::Punctuaion(Punctuation::Add)),
-            '-' => {
-                if lex.peek_more(1).is_ascii_digit() {
-                    let mut with_sign = String::from(lex.read());
-                    let only_digit = lex.read_until(not_digit_or_dot);
-                    with_sign.push_str(&only_digit);
-                    if let Ok(num) = with_sign.parse::<Num>() {
-                        tokens.push(TokenInfo {
-                            pos,
-                            token: Token::Literal(Literal::Number(num)),
-                        });
-                        None
-                    } else {
-                        return Err(lex.err("parse num failed"));
-                    }
-                } else {
-                    Some(Token::Punctuaion(Punctuation::Sub))
-                }
-            }
+            '-' => Some(Token::Punctuaion(Punctuation::Sub)),
+            // '-' => {
+            //     if lex.peek_more(1).is_ascii_digit() {
+            //         let mut with_sign = String::from(lex.read());
+            //         let only_digit = lex.read_until(not_digit_or_dot);
+            //         with_sign.push_str(&only_digit);
+            //         if let Ok(num) = with_sign.parse::<Num>() {
+            //             tokens.push(TokenInfo {
+            //                 pos,
+            //                 token: Token::Literal(Literal::Number(num)),
+            //             });
+            //             None
+            //         } else {
+            //             return Err(lex.err("parse num failed"));
+            //         }
+            //     } else {
+            //         Some(Token::Punctuaion(Punctuation::Sub))
+            //     }
+            // }
             '*' => Some(Token::Punctuaion(Punctuation::Mul)),
             '/' => {
                 if lex.peek_more(1) == '/' {

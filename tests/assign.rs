@@ -1,5 +1,5 @@
 use vas::{
-    common::{Primitives, Value},
+    common::Primitives,
     interpreter::eval,
 };
 

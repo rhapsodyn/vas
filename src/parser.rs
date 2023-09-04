@@ -24,10 +24,23 @@ pub enum BindStmt {
     LetAssign(AssignStmt),
 }
 
+#[derive(Debug, Clone)]
+pub enum AssignStmt {
+    Var(VarAssignStmt),
+    Table(TableAssignStmt),
+}
+
 /// a = 1;
 #[derive(Debug, Clone)]
-pub struct AssignStmt {
+pub struct VarAssignStmt {
     pub ident: Identifier,
+    pub expr: Expr,
+}
+
+/// a[0] = 1;
+#[derive(Debug, Clone)]
+pub struct TableAssignStmt {
+    pub lhs: IndexingExpr,
     pub expr: Expr,
 }
 
@@ -109,6 +122,7 @@ pub enum BinaryOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
     Not,
+    Neg,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -171,6 +185,7 @@ pub struct FnCallExpr {
 #[derive(Debug, Clone)]
 pub enum KVExpr {
     Key(Identifier),
+    /// literal value
     Value(Value),
 }
 
@@ -188,6 +203,7 @@ enum OpOrParen {
     Op(Operator),
 }
 
+#[derive(Debug)]
 enum OpOrExpr {
     Op(Operator),
     Expr(Expr),
@@ -366,7 +382,11 @@ impl Parser {
             Token::Identifier(_) => {
                 let one_more = self.peek_at(1)?;
                 match one_more.token {
-                    Token::Punctuaion(Punctuation::Eq) => Ok(Stmt::Assign(self.assign_stmt(true)?)),
+                    // a = 1 | a[0] = 1
+                    Token::Punctuaion(Punctuation::Eq)
+                    | Token::Punctuaion(Punctuation::BraketLeft) => {
+                        Ok(Stmt::Assign(self.assign_stmt(true)?))
+                    }
                     Token::Punctuaion(Punctuation::ParenLeft) => {
                         Ok(Stmt::FnCall(self.fn_call_stmt()?))
                     }
@@ -408,18 +428,20 @@ impl Parser {
     }
 
     fn expr(&mut self) -> VasResult<Expr> {
-        self.expr_until(None)
+        self.expr_until(vec![])
     }
 
     /// non-resursive postfix parsing
-    fn expr_until(&mut self, end: Option<&Token>) -> VasResult<Expr> {
+    fn expr_until(&mut self, end: Vec<Token>) -> VasResult<Expr> {
         let mut op_stack: Vec<OpOrParen> = vec![];
         let mut postfix: VecDeque<OpOrExpr> = VecDeque::new();
+        // Begin or Behind a LeftParen
+        let mut bb = true;
 
         while !self.is_empty() {
             let ti = self.peek()?;
 
-            if Some(&ti.token) == end {
+            if end.contains(&ti.token) {
                 break;
             }
 
@@ -428,7 +450,8 @@ impl Parser {
                 Token::Literal(_)
                 | Token::Identifier(_)
                 | Token::Punctuaion(Punctuation::BraketLeft) => {
-                    postfix.push_back(OpOrExpr::Expr(Expr::Primary(self.primary_expr()?)))
+                    postfix.push_back(OpOrExpr::Expr(Expr::Primary(self.primary_expr()?)));
+                    bb = false;
                 }
                 // math-ish `()`, not function-ish `()`
                 Token::Punctuaion(p) => match p {
@@ -437,6 +460,7 @@ impl Parser {
                         op_stack.push(OpOrParen::LeftParen);
                         // consume (
                         self.read()?;
+                        bb = true;
                     }
                     // )
                     Punctuation::ParenRight => {
@@ -447,12 +471,20 @@ impl Parser {
                         op_stack.pop();
                         // consume )
                         self.read()?;
+                        bb = false;
                     }
                     // operator
                     p => {
-                        if let Some(op) = map_op(p) {
+                        if let Some(mut op) = map_op(p) {
                             while !op_stack.is_empty() && operators_top_higher(&op, &op_stack) {
                                 postfix.push_back(op1_to_op2(op_stack.pop())?);
+                            }
+
+                            if op == Operator::Binary(BinaryOp::Math(MathOp::Sub)) && bb {
+                                // 1. at beginning of expr
+                                // 2. just behine a `(`
+                                // Sub => Neg
+                                op = Operator::Unary(UnaryOp::Neg);
                             }
 
                             op_stack.push(OpOrParen::Op(op));
@@ -462,6 +494,7 @@ impl Parser {
                             // expr end
                             break;
                         }
+                        bb = false;
                     }
                 },
                 // expr end
@@ -503,10 +536,12 @@ impl Parser {
                     Operator::Binary(op) => {
                         let rhs = eval_stack
                             .pop()
-                            .ok_or(VasErr::common(ErrKind::Parser, "not enough parameters"))?;
+                            .ok_or(VasErr::common(ErrKind::Parser, "rhs parameters missing"))?;
+
                         let lhs = eval_stack
                             .pop()
-                            .ok_or(VasErr::common(ErrKind::Parser, "not enough parameters"))?;
+                            .ok_or(VasErr::common(ErrKind::Parser, "lhs parameters missing"))?;
+
                         let expr = BinaryExpr {
                             lhs: Box::new(lhs),
                             op,
@@ -552,8 +587,7 @@ impl Parser {
     fn indexing_chain(&mut self, lhs: PrimaryExpr) -> VasResult<PrimaryExpr> {
         self.read_and_assert(&Token::Punctuaion(Punctuation::BraketLeft))?;
 
-        let key = self.expr_until(Some(&Token::Punctuaion(Punctuation::BraketRight)))?;
-        dbg!(&key);
+        let key = self.expr_until(vec![Token::Punctuaion(Punctuation::BraketRight)])?;
 
         self.read_and_assert(&Token::Punctuaion(Punctuation::BraketRight))?;
 
@@ -615,7 +649,7 @@ impl Parser {
         self.read_and_assert(&Token::Punctuaion(Punctuation::ParenLeft))?;
 
         // expr
-        let condition = self.expr_until(Some(&Token::Punctuaion(Punctuation::ParenRight)))?;
+        let condition = self.expr_until(vec![Token::Punctuaion(Punctuation::ParenRight)])?;
 
         // pop )
         self.read_and_assert(&Token::Punctuaion(Punctuation::ParenRight))?;
@@ -719,13 +753,29 @@ impl Parser {
     }
 
     fn assign_stmt(&mut self, end_with_semi_colon: bool) -> VasResult<AssignStmt> {
-        // pop ident
-        let ident_tk = self.read()?;
-        let ident = match ident_tk.token {
-            Token::Identifier(i) => i,
-            _ => return Err(self.err("unexpected token", &ident_tk)),
+        // first token has to be a ident
+        let first_token = self.peek()?.clone();
+        let lhs = match &first_token.token {
+            Token::Identifier(_) => self.expr_until(vec![Token::Punctuaion(Punctuation::Eq)])?,
+            _ => return Err(self.err("unexpected token", &first_token)),
         };
 
+        match lhs {
+            Expr::Primary(PrimaryExpr::KV(KVExpr::Key(ident))) => {
+                Ok(AssignStmt::Var(VarAssignStmt {
+                    ident,
+                    expr: self.assign_rhs(end_with_semi_colon)?,
+                }))
+            }
+            Expr::Primary(PrimaryExpr::Indexing(idx)) => Ok(AssignStmt::Table(TableAssignStmt {
+                lhs: idx,
+                expr: self.assign_rhs(end_with_semi_colon)?,
+            })),
+            _ => Err(self.err("unexpected lhs of assignment", &first_token)),
+        }
+    }
+
+    fn assign_rhs(&mut self, end_with_semi_colon: bool) -> VasResult<Expr> {
         // pop =
         self.read_and_assert(&Token::Punctuaion(Punctuation::Eq))?;
 
@@ -736,10 +786,10 @@ impl Parser {
             self.read_semi_colon()?;
             expr
         } else {
-            self.expr_until(Some(&Token::Punctuaion(Punctuation::ParenRight)))?
+            self.expr_until(vec![Token::Punctuaion(Punctuation::ParenRight)])?
         };
 
-        Ok(AssignStmt { ident, expr })
+        Ok(expr)
     }
 
     fn fn_call_args(&mut self) -> VasResult<Exprs> {
@@ -760,7 +810,7 @@ impl Parser {
                     continue;
                 }
                 _ => {
-                    let arg = self.expr_until(Some(&Token::Punctuaion(Punctuation::ParenRight)))?;
+                    let arg = self.expr_until(vec![Token::Punctuaion(Punctuation::ParenRight)])?;
                     args.push(arg);
                 }
             }
@@ -790,8 +840,7 @@ impl Parser {
                     continue;
                 }
                 _ => {
-                    let arg =
-                        self.expr_until(Some(&Token::Punctuaion(Punctuation::BraketRight)))?;
+                    let arg = self.expr_until(vec![Token::Punctuaion(Punctuation::BraketRight)])?;
                     elems.push(arg);
                 }
             }
